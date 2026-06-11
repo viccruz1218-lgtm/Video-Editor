@@ -24,11 +24,59 @@ Usage:
 import argparse
 import json
 import os
+import platform
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Dependency check — runs before any heavy import so errors are clear
+# ---------------------------------------------------------------------------
+
+def _check_system_deps() -> None:
+    """Verify ffmpeg and ImageMagick are on PATH; print install instructions if not."""
+    missing = []
+
+    if not shutil.which("ffmpeg"):
+        missing.append("ffmpeg")
+    if not shutil.which("convert"):   # ImageMagick's CLI tool
+        missing.append("imagemagick")
+
+    if not missing:
+        return
+
+    system = platform.system()
+    print("\n── Missing system dependencies ──────────────────────────────")
+    for dep in missing:
+        print(f"  ✗  {dep} not found")
+    print()
+
+    if system == "Darwin":
+        print("  Install with Homebrew:")
+        print(f"    brew install {' '.join(missing)}")
+    elif system == "Linux":
+        print("  Install with apt:")
+        pkg_map = {"imagemagick": "imagemagick"}
+        pkgs = " ".join(pkg_map.get(d, d) for d in missing)
+        print(f"    sudo apt update && sudo apt install {pkgs}")
+    else:
+        print("  Windows:")
+        if "ffmpeg" in missing:
+            print("    ffmpeg    → https://ffmpeg.org/download.html  (add bin/ to PATH)")
+        if "imagemagick" in missing:
+            print("    imagemagick → https://imagemagick.org/script/download.php")
+
+    print("─────────────────────────────────────────────────────────────\n")
+    sys.exit(1)
+
+
+_check_system_deps()
+
 
 import numpy as np
 import whisper
