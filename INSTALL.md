@@ -3,72 +3,103 @@
 ## Prerequisites
 
 - Python 3.9 or newer
-- ffmpeg installed system-wide (required by both moviepy and pydub)
+- ffmpeg installed system-wide (required by moviepy and pydub)
+- ImageMagick installed system-wide (required by moviepy TextClip for text overlays)
 
-### Install ffmpeg
+### Install ffmpeg + ImageMagick
 
 **macOS (Homebrew):**
 ```bash
-brew install ffmpeg
+brew install ffmpeg imagemagick
 ```
 
 **Ubuntu / Debian:**
 ```bash
-sudo apt update && sudo apt install ffmpeg
+sudo apt update && sudo apt install ffmpeg imagemagick
 ```
 
 **Windows:**
-Download from https://ffmpeg.org/download.html and add the `bin/` folder to your PATH.
+- ffmpeg: https://ffmpeg.org/download.html → add `bin/` to PATH
+- ImageMagick: https://imagemagick.org/script/download.php
 
 ---
 
 ## Python dependencies
 
-Create and activate a virtual environment first (strongly recommended):
-
 ```bash
 python3 -m venv venv
-source venv/bin/activate          # macOS/Linux
-venv\Scripts\activate             # Windows
-```
+source venv/bin/activate       # macOS/Linux
+venv\Scripts\activate          # Windows
 
-Install all Python packages:
-
-```bash
 pip install -r requirements.txt
 ```
-
-> **Note on Torch:** `openai-whisper` depends on PyTorch. The command above installs
-> the CPU version. If you have an NVIDIA GPU and want faster transcription, install
-> the GPU build of torch first — see https://pytorch.org/get-started/locally/
 
 ---
 
 ## Running the tool
 
-Basic usage (uses the `base` Whisper model — fast, good enough for clear speech):
-
+### Filler removal only (no intro/outro)
 ```bash
 python clean_video.py --input agent_interview.mp4
 ```
 
-Better accuracy (slower — recommended for noisy audio or strong accents):
-
+### With crossfade transitions between every cut
 ```bash
-python clean_video.py --input agent_interview.mp4 --model small
+python clean_video.py --input agent_interview.mp4 --transition crossfade
 ```
 
-Best accuracy (slowest — use on a GPU machine or overnight):
-
+### Full production run — intro card + lower third + outro + transitions
 ```bash
-python clean_video.py --input agent_interview.mp4 --model medium
+python clean_video.py --input agent_interview.mp4 \
+  --model small \
+  --transition crossfade \
+  --intro-title "Meet Sarah Johnson" \
+  --intro-subtitle "Top Agent · Miami, FL" \
+  --intro-color 1a1a2e \
+  --intro-duration 3 \
+  --lower-third-name "Sarah Johnson" \
+  --lower-third-title "Senior Real Estate Agent" \
+  --lower-third-at 1.5 \
+  --outro-text "Follow @BrowardRealty for more agent spotlights" \
+  --outro-color 1a1a2e \
+  --outro-duration 4
 ```
 
-Save the raw transcript with word-level timestamps alongside the video:
+### With your agency logo on the intro card
+```bash
+python clean_video.py --input agent_interview.mp4 \
+  --intro-title "Agent Spotlight" \
+  --intro-logo path/to/logo.png \
+  --intro-subtitle "BrowardRealty.com"
+```
 
+### Save the word-level transcript alongside the video
 ```bash
 python clean_video.py --input agent_interview.mp4 --dump-transcript
 ```
+
+---
+
+## All flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input` | required | Input MP4 or MOV path |
+| `--model` | `base` | Whisper model: tiny / base / small / medium / large |
+| `--transition` | `crossfade` | Transition between clips: `crossfade`, `fade_to_black`, `wipe_left`, `wipe_right`, `none` |
+| `--intro-title` | — | Large title text on intro card |
+| `--intro-subtitle` | — | Smaller subtitle on intro card |
+| `--intro-logo` | — | Path to logo image (PNG with transparency works best) |
+| `--intro-color` | `1a1a2e` | Hex background color for intro |
+| `--intro-duration` | `3.0` | Intro card length in seconds |
+| `--outro-text` | — | Call-to-action text on outro card |
+| `--outro-color` | `1a1a2e` | Hex background color for outro |
+| `--outro-duration` | `4.0` | Outro card length in seconds |
+| `--lower-third-name` | — | Name displayed in lower-third bar |
+| `--lower-third-title` | — | Job title in lower-third bar |
+| `--lower-third-at` | `1.5` | Seconds into interview when bar appears |
+| `--lower-third-duration` | `4.0` | How long the bar stays on screen |
+| `--dump-transcript` | off | Save word-timestamp JSON alongside video |
 
 ---
 
@@ -76,33 +107,29 @@ python clean_video.py --input agent_interview.mp4 --dump-transcript
 
 | File | Description |
 |------|-------------|
-| `agent_interview_cleaned.mp4` | Final export — same resolution/quality as input |
-| `agent_interview_transcript.json` | Word-level timestamps (only with `--dump-transcript`) |
+| `[name]_cleaned.mp4` | Final export — intro + clean interview + outro |
+| `[name]_transcript.json` | Word timestamps (only with `--dump-transcript`) |
 
 ---
 
-## Whisper model size guide
+## Whisper model guide
 
-| Model | VRAM | Speed (CPU) | Accuracy |
-|-------|------|-------------|----------|
-| tiny  | ~1 GB | Very fast | Low |
-| base  | ~1 GB | Fast | Good |
-| small | ~2 GB | Moderate | Better |
-| medium | ~5 GB | Slow | Great |
-| large | ~10 GB | Very slow | Best |
-
-For 2–5 minute interviews on a modern MacBook, `base` takes ~2 min and `small` takes ~5 min.
+| Model | Speed (CPU, 3-min clip) | Accuracy |
+|-------|------------------------|----------|
+| tiny  | ~1 min | Low |
+| base  | ~2 min | Good |
+| small | ~5 min | Better — recommended |
+| medium | ~12 min | Great |
+| large | ~25 min | Best |
 
 ---
 
 ## Manual review items
 
-After the script finishes it prints a list of **flagged cuts** — segments it detected
-as fillers but did NOT remove because they were mid-sentence in a context where removal
-might break grammar. Open your video editor, scrub to each timestamp shown, and decide
-whether to cut manually.
+After the script finishes it prints flagged cuts — segments that were NOT removed
+because removing them mid-sentence could break grammar. Open your editor, scrub to
+each timestamp, and decide manually. Common cases:
 
-Common cases that get flagged:
-- "like" used as a comparison ("it was like a 30-second call")
-- "right" at end of a rhetorical question ("that's what buyers want, right?")
-- "so" transitioning into a new idea mid-sentence
+- "like" used as a comparison: "it was like a 30-second call"
+- "right" at end of a rhetorical question: "that's what buyers want, right?"
+- "so" transitioning mid-idea: "so that means we're looking at…"

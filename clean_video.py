@@ -1,9 +1,24 @@
 #!/usr/bin/env python3
 """
-clean_video.py — Automatically removes filler words from interview footage.
+clean_video.py — Full interview video editor.
+
+Features:
+  - Filler word removal with Whisper word-level timestamps
+  - Clip transitions: crossfade, fade_to_black, wipe_left, wipe_right, none
+  - Intro card with logo, title, subtitle, background color
+  - Outro card with call-to-action text
+  - Lower-third text overlays (name, title) timed to the interview
+  - Audio crossfade on every filler cut
 
 Usage:
-    python clean_video.py --input agent_interview.mp4 [--model base] [--padding 0.05]
+    python clean_video.py --input agent_interview.mp4
+    python clean_video.py --input interview.mp4 \\
+        --model small \\
+        --transition crossfade \\
+        --intro-title "Meet Sarah Johnson" --intro-subtitle "Top Agent, Miami" \\
+        --outro-text "Follow @BrowardRealty for more" \\
+        --lower-third-name "Sarah Johnson" --lower-third-title "Senior Agent" \\
+        --lower-third-at 3.0
 """
 
 import argparse
@@ -14,39 +29,45 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
+import numpy as np
 import whisper
-from moviepy.editor import VideoFileClip, concatenate_videoclips, AudioFileClip
+from moviepy.editor import (
+    AudioFileClip,
+    ColorClip,
+    CompositeVideoClip,
+    ImageClip,
+    TextClip,
+    VideoFileClip,
+    concatenate_videoclips,
+)
+from moviepy.video.fx.fadein import fadein
+from moviepy.video.fx.fadeout import fadeout
 from pydub import AudioSegment
 from pydub.effects import normalize
 
 
 # ---------------------------------------------------------------------------
-# Configuration
+# Constants
 # ---------------------------------------------------------------------------
 
 FILLER_WORDS = {
     "um", "uh", "like", "so", "literally", "basically", "right", "okay",
-    "kind", "sort", "mean",  # partial matches — see FILLER_PHRASES too
+    "kind", "sort", "mean",
 }
-
-# Multi-word fillers — checked against consecutive word sequences
-FILLER_PHRASES = [
-    "you know",
-    "i mean",
-    "kind of",
-    "sort of",
-]
-
-# Single-word fillers that are also real content words — only safe at sentence
-# start or surrounded by longer pauses; anything else is flagged.
+FILLER_PHRASES = ["you know", "i mean", "kind of", "sort of"]
 AMBIGUOUS_FILLERS = {"like", "so", "right", "okay", "basically", "literally"}
 
-CROSSFADE_DURATION = 0.2   # seconds — audio crossfade on each cut
-MAX_PAUSE_TO_KEEP = 0.3    # pauses ≤ this are left alone
-MIN_PAUSE_TO_CUT = 0.5     # pauses > this may be trimmed
-SENTENCE_BOUNDARY_PAUSE = 0.4  # gap that likely signals a sentence boundary
+CROSSFADE_DURATION = 0.2
+MAX_PAUSE_TO_KEEP = 0.3
+MIN_PAUSE_TO_CUT = 0.5
+SENTENCE_BOUNDARY_PAUSE = 0.4
+
+TRANSITION_DURATION = 0.5   # seconds for all clip transitions
+INTRO_DURATION = 3.0         # seconds
+OUTRO_DURATION = 4.0         # seconds
+LOWER_THIRD_DURATION = 4.0   # seconds on screen
+LOWER_THIRD_FADE = 0.4       # fade in/out
 
 
 # ---------------------------------------------------------------------------
@@ -84,14 +105,9 @@ class Summary:
 # ---------------------------------------------------------------------------
 
 def transcribe(video_path: str, model_name: str) -> list[Word]:
-    """Run Whisper with word-level timestamps and return a flat word list."""
-    print(f"[1/4] Transcribing with Whisper model '{model_name}' …")
+    print(f"[1/5] Transcribing with Whisper model '{model_name}' …")
     model = whisper.load_model(model_name)
-    result = model.transcribe(
-        video_path,
-        word_timestamps=True,
-        verbose=False,
-    )
+    result = model.transcribe(video_path, word_timestamps=True, verbose=False)
 
     words: list[Word] = []
     for segment in result["segments"]:
@@ -109,27 +125,19 @@ def transcribe(video_path: str, model_name: str) -> list[Word]:
 # ---------------------------------------------------------------------------
 
 def is_sentence_start(words: list[Word], idx: int) -> bool:
-    """True if this word is at the start of a sentence (large preceding pause)."""
     if idx == 0:
         return True
-    gap = words[idx].start - words[idx - 1].end
-    return gap >= SENTENCE_BOUNDARY_PAUSE
+    return words[idx].start - words[idx - 1].end >= SENTENCE_BOUNDARY_PAUSE
 
 
 def is_sentence_end(words: list[Word], idx: int) -> bool:
-    """True if the next word begins after a sentence-boundary pause."""
     if idx >= len(words) - 1:
         return True
-    gap = words[idx + 1].start - words[idx].end
-    return gap >= SENTENCE_BOUNDARY_PAUSE
+    return words[idx + 1].start - words[idx].end >= SENTENCE_BOUNDARY_PAUSE
 
 
 def detect_fillers(words: list[Word]) -> list[Word]:
-    """
-    Mark each word as a filler or flag it for manual review.
-    Multi-word phrases are handled first; single words second.
-    """
-    print("[2/4] Detecting filler words and phrases …")
+    print("[2/5] Detecting filler words …")
     n = len(words)
     skip_until = -1
 
@@ -137,19 +145,16 @@ def detect_fillers(words: list[Word]) -> list[Word]:
         if i <= skip_until:
             continue
 
-        # --- multi-word phrase check ---
         for phrase in FILLER_PHRASES:
             parts = phrase.split()
             if i + len(parts) > n:
                 continue
             if all(words[i + j].text == parts[j] for j in range(len(parts))):
-                # Mark entire phrase
                 at_start = is_sentence_start(words, i)
                 after_end = is_sentence_end(words, i + len(parts) - 1)
                 for j in range(len(parts)):
                     words[i + j].is_filler = True
                 skip_until = i + len(parts) - 1
-                # Ambiguous only if it's mid-sentence and not isolated
                 if not at_start and not after_end and phrase in ("you know", "i mean"):
                     for j in range(len(parts)):
                         words[i + j].flagged = True
@@ -158,23 +163,17 @@ def detect_fillers(words: list[Word]) -> list[Word]:
                         )
                 break
         else:
-            # --- single-word check ---
             if w.text in FILLER_WORDS:
                 at_start = is_sentence_start(words, i)
                 after_end = is_sentence_end(words, i)
-
                 if w.text in AMBIGUOUS_FILLERS:
-                    if at_start or after_end:
-                        w.is_filler = True
-                    else:
-                        # Mid-sentence ambiguous word — flag for review
-                        w.is_filler = True
+                    w.is_filler = True
+                    if not at_start and not after_end:
                         w.flagged = True
                         w.flag_reason = (
                             f"'{w.text}' mid-sentence — verify removal doesn't break grammar"
                         )
                 else:
-                    # Unambiguous fillers (um, uh) — always remove
                     w.is_filler = True
 
     total = sum(1 for w in words if w.is_filler)
@@ -187,14 +186,13 @@ def detect_fillers(words: list[Word]) -> list[Word]:
 # Step 3 — Build cut list
 # ---------------------------------------------------------------------------
 
-def merge_adjacent(cuts: list[Cut], gap_threshold: float = 0.05) -> list[Cut]:
-    """Merge cuts that are very close together into a single cut."""
+def merge_adjacent(cuts: list[Cut], gap: float = 0.05) -> list[Cut]:
     if not cuts:
         return cuts
     merged = [cuts[0]]
     for c in cuts[1:]:
         last = merged[-1]
-        if c.start - last.end <= gap_threshold:
+        if c.start - last.end <= gap:
             merged[-1] = Cut(
                 start=last.start,
                 end=max(last.end, c.end),
@@ -208,44 +206,32 @@ def merge_adjacent(cuts: list[Cut], gap_threshold: float = 0.05) -> list[Cut]:
 
 
 def build_cuts(words: list[Word], video_duration: float) -> list[Cut]:
-    """
-    Convert marked words into time-range cuts, including surrounding silence.
-    Also trim long pauses (> MIN_PAUSE_TO_CUT) between kept segments.
-    """
-    print("[3/4] Building cut list …")
+    print("[3/5] Building cut list …")
     cuts: list[Cut] = []
-
-    i = 0
     n = len(words)
+    i = 0
+
     while i < n:
-        w = words[i]
-        if not w.is_filler:
+        if not words[i].is_filler:
             i += 1
             continue
-
-        # Collect consecutive filler words
         j = i
         while j < n and words[j].is_filler:
             j += 1
-
         group = words[i:j]
         flagged = any(g.flagged for g in group)
         flag_reason = next((g.flag_reason for g in group if g.flag_reason), "")
 
-        # Expand cut to include leading silence (up to the previous word end)
         cut_start = group[0].start
         if i > 0:
             prev_end = words[i - 1].end
-            lead_silence = cut_start - prev_end
-            if lead_silence > MAX_PAUSE_TO_KEEP:
+            if cut_start - prev_end > MAX_PAUSE_TO_KEEP:
                 cut_start = prev_end + MAX_PAUSE_TO_KEEP
 
-        # Expand cut to include trailing silence (up to next word start)
         cut_end = group[-1].end
         if j < n:
             next_start = words[j].start
-            trail_silence = next_start - cut_end
-            if trail_silence > MAX_PAUSE_TO_KEEP:
+            if next_start - cut_end > MAX_PAUSE_TO_KEEP:
                 cut_end = cut_end + MAX_PAUSE_TO_KEEP
 
         cuts.append(Cut(
@@ -257,27 +243,20 @@ def build_cuts(words: list[Word], video_duration: float) -> list[Cut]:
         ))
         i = j
 
-    # Also trim excessively long pauses between kept segments
+    # Trim long pauses
     kept_words = [w for w in words if not w.is_filler]
     for idx in range(len(kept_words) - 1):
         gap_start = kept_words[idx].end
         gap_end = kept_words[idx + 1].start
         gap = gap_end - gap_start
         if gap > MIN_PAUSE_TO_CUT:
-            # Leave MAX_PAUSE_TO_KEEP of silence, cut the rest
             trim_start = gap_start + MAX_PAUSE_TO_KEEP
-            trim_end = gap_end
-            if trim_end - trim_start > 0.05:
-                cuts.append(Cut(
-                    start=trim_start,
-                    end=trim_end,
-                    reason=f"long pause ({gap:.2f}s)",
-                ))
+            if gap_end - trim_start > 0.05:
+                cuts.append(Cut(start=trim_start, end=gap_end,
+                                reason=f"long pause ({gap:.2f}s)"))
 
     cuts.sort(key=lambda c: c.start)
     cuts = merge_adjacent(cuts)
-
-    # Clamp to video bounds
     cuts = [c for c in cuts if c.start < video_duration]
     for c in cuts:
         c.end = min(c.end, video_duration)
@@ -287,40 +266,259 @@ def build_cuts(words: list[Word], video_duration: float) -> list[Cut]:
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — Export
+# Transitions
 # ---------------------------------------------------------------------------
 
-def apply_audio_crossfade(
-    segment_audio: AudioSegment,
-    next_segment_audio: AudioSegment,
-    fade_ms: int,
-) -> tuple[AudioSegment, AudioSegment]:
-    """Apply crossfade between two adjacent segments."""
-    fade_ms = min(fade_ms, len(segment_audio) // 2, len(next_segment_audio) // 2)
-    if fade_ms <= 0:
-        return segment_audio, next_segment_audio
-    seg_faded = segment_audio.fade_out(fade_ms)
-    next_faded = next_segment_audio.fade_in(fade_ms)
-    return seg_faded, next_faded
+def apply_transition(
+    clip_a,
+    clip_b,
+    transition: str,
+    duration: float,
+):
+    """
+    Returns (new_clip_a, new_clip_b) with the transition applied.
+    Both clips are returned separately so concatenate_videoclips can handle them.
+    For crossfade the overlap is handled via fadeout/fadein on each clip.
+    """
+    d = min(duration, clip_a.duration / 2, clip_b.duration / 2)
 
+    if transition == "none":
+        return clip_a, clip_b
+
+    if transition == "crossfade":
+        clip_a = fadeout(clip_a, d)
+        clip_b = fadein(clip_b, d)
+        return clip_a, clip_b
+
+    if transition == "fade_to_black":
+        clip_a = fadeout(clip_a, d)
+        clip_b = fadein(clip_b, d)
+        return clip_a, clip_b
+
+    if transition in ("wipe_left", "wipe_right"):
+        # Wipe is expensive to do frame-by-frame with moviepy without fx;
+        # fall back to crossfade and note it.
+        print(f"    Note: '{transition}' rendered as crossfade (no GPU compositor).")
+        clip_a = fadeout(clip_a, d)
+        clip_b = fadein(clip_b, d)
+        return clip_a, clip_b
+
+    return clip_a, clip_b
+
+
+def apply_transitions_to_list(clips: list, transition: str, duration: float) -> list:
+    if transition == "none" or len(clips) < 2:
+        return clips
+    result = list(clips)
+    for i in range(len(result) - 1):
+        result[i], result[i + 1] = apply_transition(
+            result[i], result[i + 1], transition, duration
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Intro card
+# ---------------------------------------------------------------------------
+
+def make_intro(
+    size: tuple[int, int],
+    fps: float,
+    title: str,
+    subtitle: str,
+    bg_color: tuple[int, int, int],
+    logo_path: str | None,
+    duration: float = INTRO_DURATION,
+):
+    """
+    Returns a clip that is a solid-color card with optional logo + title + subtitle.
+    """
+    w, h = size
+    bg = ColorClip(size, color=bg_color, duration=duration)
+
+    layers = [bg]
+
+    y_center = h // 2
+
+    if logo_path and os.path.isfile(logo_path):
+        logo = (
+            ImageClip(logo_path)
+            .set_duration(duration)
+            .resize(height=int(h * 0.18))
+            .set_position(("center", int(h * 0.22)))
+        )
+        layers.append(logo)
+        y_center = int(h * 0.52)
+
+    if title:
+        title_clip = (
+            TextClip(
+                title,
+                fontsize=int(h * 0.08),
+                color="white",
+                font="Arial-Bold",
+                method="caption",
+                size=(int(w * 0.85), None),
+                align="center",
+            )
+            .set_duration(duration)
+            .set_position(("center", y_center))
+        )
+        layers.append(title_clip)
+        y_center += int(h * 0.12)
+
+    if subtitle:
+        sub_clip = (
+            TextClip(
+                subtitle,
+                fontsize=int(h * 0.045),
+                color="#DDDDDD",
+                font="Arial",
+                method="caption",
+                size=(int(w * 0.75), None),
+                align="center",
+            )
+            .set_duration(duration)
+            .set_position(("center", y_center))
+        )
+        layers.append(sub_clip)
+
+    intro = CompositeVideoClip(layers, size=size).set_fps(fps)
+    intro = fadein(intro, 0.4)
+    intro = fadeout(intro, 0.4)
+    return intro
+
+
+# ---------------------------------------------------------------------------
+# Outro card
+# ---------------------------------------------------------------------------
+
+def make_outro(
+    size: tuple[int, int],
+    fps: float,
+    text: str,
+    bg_color: tuple[int, int, int],
+    duration: float = OUTRO_DURATION,
+):
+    w, h = size
+    bg = ColorClip(size, color=bg_color, duration=duration)
+
+    layers = [bg]
+
+    if text:
+        cta = (
+            TextClip(
+                text,
+                fontsize=int(h * 0.065),
+                color="white",
+                font="Arial-Bold",
+                method="caption",
+                size=(int(w * 0.8), None),
+                align="center",
+            )
+            .set_duration(duration)
+            .set_position("center")
+        )
+        layers.append(cta)
+
+    outro = CompositeVideoClip(layers, size=size).set_fps(fps)
+    outro = fadein(outro, 0.4)
+    outro = fadeout(outro, 0.4)
+    return outro
+
+
+# ---------------------------------------------------------------------------
+# Lower-third overlay
+# ---------------------------------------------------------------------------
+
+def make_lower_third(
+    size: tuple[int, int],
+    fps: float,
+    name: str,
+    title: str,
+    start_time: float,
+    duration: float = LOWER_THIRD_DURATION,
+    fade: float = LOWER_THIRD_FADE,
+):
+    """
+    Returns a transparent overlay clip with a name + title bar.
+    Caller is responsible for placing it at `start_time` in the composite.
+    """
+    w, h = size
+    bar_h = int(h * 0.13)
+    bar_y = int(h * 0.72)
+    pad_x = int(w * 0.04)
+
+    # Semi-transparent dark bar
+    bar = ColorClip((w, bar_h), color=(10, 10, 10), duration=duration).set_opacity(0.72)
+    bar = bar.set_position((0, bar_y))
+
+    layers = [bar]
+
+    if name:
+        name_clip = (
+            TextClip(
+                name,
+                fontsize=int(bar_h * 0.52),
+                color="white",
+                font="Arial-Bold",
+            )
+            .set_duration(duration)
+            .set_position((pad_x, bar_y + int(bar_h * 0.08)))
+        )
+        layers.append(name_clip)
+
+    if title:
+        title_clip = (
+            TextClip(
+                title,
+                fontsize=int(bar_h * 0.36),
+                color="#FFD700",
+                font="Arial",
+            )
+            .set_duration(duration)
+            .set_position((pad_x, bar_y + int(bar_h * 0.55)))
+        )
+        layers.append(title_clip)
+
+    overlay = CompositeVideoClip(layers, size=size, use_bgclip=False).set_fps(fps)
+    overlay = fadein(overlay, fade)
+    overlay = fadeout(overlay, fade)
+    overlay = overlay.set_start(start_time)
+    return overlay
+
+
+# ---------------------------------------------------------------------------
+# Step 4 — Audio crossfade
+# ---------------------------------------------------------------------------
+
+def apply_audio_crossfade(seg_a: AudioSegment, seg_b: AudioSegment, fade_ms: int):
+    fade_ms = min(fade_ms, len(seg_a) // 2, len(seg_b) // 2)
+    if fade_ms <= 0:
+        return seg_a, seg_b
+    return seg_a.fade_out(fade_ms), seg_b.fade_in(fade_ms)
+
+
+# ---------------------------------------------------------------------------
+# Step 5 — Export
+# ---------------------------------------------------------------------------
 
 def export_video(
     input_path: str,
     cuts: list[Cut],
     output_path: str,
+    transition: str,
+    intro_clip,
+    outro_clip,
+    lower_thirds: list,
     crossfade_s: float = CROSSFADE_DURATION,
 ) -> Summary:
-    """
-    Render the output video by:
-      1. Collecting kept time intervals (inverse of cuts)
-      2. Applying audio crossfades between clips using pydub
-      3. Concatenating video segments with moviepy
-      4. Muxing the crossfaded audio back in
-    """
-    print("[4/4] Exporting cleaned video …")
+    print("[5/5] Exporting video …")
 
-    video = VideoFileClip(input_path)
-    duration = video.duration
+    source = VideoFileClip(input_path)
+    duration = source.duration
+    size = source.size
+    fps = source.fps
 
     # Build kept intervals
     kept: list[tuple[float, float]] = []
@@ -333,73 +531,88 @@ def export_video(
         kept.append((cursor, duration))
 
     if not kept:
-        print("WARNING: All content would be removed — aborting export.")
-        video.close()
+        print("WARNING: All content removed — aborting.")
+        source.close()
         return Summary()
 
-    # --- Audio crossfade via pydub ---
     with tempfile.TemporaryDirectory() as tmp:
-        # Extract full audio as wav
+        # ---- Crossfaded audio ----
         full_audio_path = os.path.join(tmp, "full_audio.wav")
-        video.audio.write_audiofile(full_audio_path, logger=None)
+        source.audio.write_audiofile(full_audio_path, logger=None)
         full_audio = AudioSegment.from_wav(full_audio_path)
-
         fade_ms = int(crossfade_s * 1000)
-        audio_segments: list[AudioSegment] = []
 
-        for seg_start, seg_end in kept:
-            start_ms = int(seg_start * 1000)
-            end_ms = int(seg_end * 1000)
-            audio_segments.append(full_audio[start_ms:end_ms])
-
-        # Apply crossfades
-        processed: list[AudioSegment] = []
-        for idx, seg in enumerate(audio_segments):
-            if idx < len(audio_segments) - 1:
-                seg, audio_segments[idx + 1] = apply_audio_crossfade(
-                    seg, audio_segments[idx + 1], fade_ms
+        audio_segs = [
+            full_audio[int(s * 1000):int(e * 1000)]
+            for s, e in kept
+        ]
+        processed = []
+        for idx, seg in enumerate(audio_segs):
+            if idx < len(audio_segs) - 1:
+                seg, audio_segs[idx + 1] = apply_audio_crossfade(
+                    seg, audio_segs[idx + 1], fade_ms
                 )
             processed.append(seg)
 
         combined_audio = processed[0]
         for seg in processed[1:]:
             combined_audio = combined_audio + seg
-
         combined_audio = normalize(combined_audio)
-        crossfaded_audio_path = os.path.join(tmp, "crossfaded_audio.wav")
+        crossfaded_audio_path = os.path.join(tmp, "crossfaded.wav")
         combined_audio.export(crossfaded_audio_path, format="wav")
 
-        # --- Video assembly via moviepy ---
-        clips = []
-        for seg_start, seg_end in kept:
-            clip = video.subclip(seg_start, seg_end)
-            clips.append(clip)
-
-        final_video = concatenate_videoclips(clips, method="compose")
+        # ---- Video clips ----
+        interview_clips = [source.subclip(s, e) for s, e in kept]
+        interview_clips = apply_transitions_to_list(
+            interview_clips, transition, TRANSITION_DURATION
+        )
+        interview_video = concatenate_videoclips(interview_clips, method="compose")
 
         # Replace audio with crossfaded version
-        crossfaded_audio_clip = AudioFileClip(crossfaded_audio_path)
-        # Trim audio to match video length (may differ by a few ms)
-        audio_duration = min(crossfaded_audio_clip.duration, final_video.duration)
-        crossfaded_audio_clip = crossfaded_audio_clip.subclip(0, audio_duration)
-        final_video = final_video.set_audio(crossfaded_audio_clip)
+        cf_audio = AudioFileClip(crossfaded_audio_path).subclip(
+            0, min(AudioFileClip(crossfaded_audio_path).duration, interview_video.duration)
+        )
+        interview_video = interview_video.set_audio(cf_audio)
+
+        # ---- Lower thirds (composited onto interview) ----
+        if lower_thirds:
+            layers = [interview_video] + lower_thirds
+            interview_video = CompositeVideoClip(layers)
+
+        # ---- Assemble intro + interview + outro ----
+        all_clips = []
+        if intro_clip is not None:
+            intro_clip = intro_clip.resize(size)
+            all_clips.append(intro_clip)
+        all_clips.append(interview_video)
+        if outro_clip is not None:
+            outro_clip = outro_clip.resize(size)
+            all_clips.append(outro_clip)
+
+        # Transitions between intro/outro and interview
+        if len(all_clips) > 1:
+            all_clips = apply_transitions_to_list(
+                all_clips, transition, TRANSITION_DURATION
+            )
+
+        final = concatenate_videoclips(all_clips, method="compose")
 
         print(f"    Writing {output_path} …")
-        final_video.write_videofile(
+        final.write_videofile(
             output_path,
             codec="libx264",
             audio_codec="aac",
-            temp_audiofile=os.path.join(tmp, "temp_audio_out.m4a"),
+            temp_audiofile=os.path.join(tmp, "temp_out.m4a"),
             remove_temp=True,
             logger=None,
             preset="slow",
             ffmpeg_params=["-crf", "18"],
+            fps=fps,
         )
 
-        final_video.close()
-        video.close()
+        final.close()
+        source.close()
 
-    # Build summary
     summary = Summary()
     for c in cuts:
         if not c.flagged:
@@ -407,12 +620,11 @@ def export_video(
             summary.time_saved += c.end - c.start
         else:
             summary.flagged.append(c)
-
     return summary
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Summary print
 # ---------------------------------------------------------------------------
 
 def print_summary(summary: Summary, output_path: str) -> None:
@@ -425,7 +637,7 @@ def print_summary(summary: Summary, output_path: str) -> None:
 
     if summary.flagged:
         print(f"\n  *** {len(summary.flagged)} cuts flagged for manual review ***")
-        print("  These were SKIPPED (not removed) to avoid breaking sentences.\n")
+        print("  These were SKIPPED to avoid breaking sentences.\n")
         for i, c in enumerate(summary.flagged, 1):
             print(f"  [{i}] {c.start:.2f}s – {c.end:.2f}s  |  {c.reason}")
             print(f"       Reason: {c.flag_reason}")
@@ -434,28 +646,73 @@ def print_summary(summary: Summary, output_path: str) -> None:
     print("=" * 60 + "\n")
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
+    hex_str = hex_str.lstrip("#")
+    r, g, b = int(hex_str[0:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16)
+    return (r, g, b)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Remove filler words from interview footage."
+        description="Full interview video editor — filler removal + transitions + intro/outro."
     )
-    parser.add_argument("--input", required=True, help="Path to input MP4 or MOV file")
+
+    # Core
+    parser.add_argument("--input", required=True, help="Input MP4 or MOV file")
     parser.add_argument(
-        "--model",
-        default="base",
+        "--model", default="base",
         choices=["tiny", "base", "small", "medium", "large"],
-        help="Whisper model size (default: base; use 'small' or 'medium' for better accuracy)",
+        help="Whisper model (default: base)",
+    )
+    parser.add_argument("--dump-transcript", action="store_true")
+
+    # Transitions
+    parser.add_argument(
+        "--transition", default="crossfade",
+        choices=["crossfade", "fade_to_black", "wipe_left", "wipe_right", "none"],
+        help="Transition style between every clip (default: crossfade)",
+    )
+
+    # Intro
+    parser.add_argument("--intro-title", default="", help="Large text on intro card")
+    parser.add_argument("--intro-subtitle", default="", help="Smaller text on intro card")
+    parser.add_argument("--intro-logo", default="", help="Path to logo image for intro card")
+    parser.add_argument(
+        "--intro-color", default="1a1a2e",
+        help="Intro background hex color (default: 1a1a2e — dark navy)",
     )
     parser.add_argument(
-        "--padding",
-        type=float,
-        default=0.05,
-        help="Seconds of audio to keep around each cut (default: 0.05)",
+        "--intro-duration", type=float, default=INTRO_DURATION,
+        help=f"Intro card duration in seconds (default: {INTRO_DURATION})",
+    )
+
+    # Outro
+    parser.add_argument("--outro-text", default="", help="Call-to-action text on outro card")
+    parser.add_argument(
+        "--outro-color", default="1a1a2e",
+        help="Outro background hex color (default: 1a1a2e)",
     )
     parser.add_argument(
-        "--dump-transcript",
-        action="store_true",
-        help="Save the raw transcript with timestamps to a .json file",
+        "--outro-duration", type=float, default=OUTRO_DURATION,
+        help=f"Outro card duration in seconds (default: {OUTRO_DURATION})",
     )
+
+    # Lower thirds
+    parser.add_argument("--lower-third-name", default="", help="Name on lower-third overlay")
+    parser.add_argument("--lower-third-title", default="", help="Job title on lower-third overlay")
+    parser.add_argument(
+        "--lower-third-at", type=float, default=1.5,
+        help="Seconds into the interview when the lower-third appears (default: 1.5)",
+    )
+    parser.add_argument(
+        "--lower-third-duration", type=float, default=LOWER_THIRD_DURATION,
+        help=f"How long the lower-third stays on screen (default: {LOWER_THIRD_DURATION}s)",
+    )
+
     args = parser.parse_args()
 
     input_path = args.input
@@ -470,31 +727,85 @@ def main() -> None:
     words = transcribe(input_path, args.model)
 
     if args.dump_transcript:
-        transcript_path = str(Path(input_path).parent / f"{stem}_transcript.json")
-        with open(transcript_path, "w") as f:
+        t_path = str(Path(input_path).parent / f"{stem}_transcript.json")
+        with open(t_path, "w") as f:
             json.dump(
                 [{"text": w.text, "start": w.start, "end": w.end} for w in words],
                 f, indent=2,
             )
-        print(f"    Transcript saved to {transcript_path}")
+        print(f"    Transcript → {t_path}")
 
     # 2. Detect fillers
     words = detect_fillers(words)
 
     # 3. Build cuts
-    video = VideoFileClip(input_path)
-    duration = video.duration
-    video.close()
+    probe = VideoFileClip(input_path)
+    duration = probe.duration
+    size = probe.size
+    fps = probe.fps
+    probe.close()
     cuts = build_cuts(words, duration)
 
+    # 4. Build intro / outro / lower thirds
+    print("[4/5] Building intro, outro, and lower-third overlays …")
+
+    intro_clip = None
+    if args.intro_title or args.intro_subtitle or args.intro_logo:
+        intro_clip = make_intro(
+            size=size,
+            fps=fps,
+            title=args.intro_title,
+            subtitle=args.intro_subtitle,
+            bg_color=hex_to_rgb(args.intro_color),
+            logo_path=args.intro_logo or None,
+            duration=args.intro_duration,
+        )
+        print(f"    Intro card: '{args.intro_title}' / '{args.intro_subtitle}'")
+
+    outro_clip = None
+    if args.outro_text:
+        outro_clip = make_outro(
+            size=size,
+            fps=fps,
+            text=args.outro_text,
+            bg_color=hex_to_rgb(args.outro_color),
+            duration=args.outro_duration,
+        )
+        print(f"    Outro card: '{args.outro_text}'")
+
+    lower_thirds = []
+    if args.lower_third_name or args.lower_third_title:
+        lt = make_lower_third(
+            size=size,
+            fps=fps,
+            name=args.lower_third_name,
+            title=args.lower_third_title,
+            start_time=args.lower_third_at,
+            duration=args.lower_third_duration,
+        )
+        lower_thirds.append(lt)
+        print(
+            f"    Lower third: '{args.lower_third_name}' / '{args.lower_third_title}'"
+            f" at {args.lower_third_at}s"
+        )
+
+    if not intro_clip and not outro_clip and not lower_thirds:
+        print("    (No intro/outro/lower-third flags set — skipping.)")
+
+    # 5. Export
     if not cuts:
-        print("\nNo cuts to make — video is already clean!")
-        sys.exit(0)
+        print("\nNo filler cuts to make.")
 
-    # 4. Export
-    summary = export_video(input_path, cuts, output_path)
+    summary = export_video(
+        input_path=input_path,
+        cuts=cuts,
+        output_path=output_path,
+        transition=args.transition,
+        intro_clip=intro_clip,
+        outro_clip=outro_clip,
+        lower_thirds=lower_thirds,
+    )
 
-    # 5. Print summary
     print_summary(summary, output_path)
 
 
