@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video Editor — Agent Spotlight</title>
+  <style>
+    :root {
+      --bg: #0f0f13;
+      --surface: #1a1a24;
+      --surface2: #22222f;
+      --border: #2e2e3e;
+      --accent: #6c63ff;
+      --accent2: #a78bfa;
+      --gold: #ffd700;
+      --text: #e8e8f0;
+      --muted: #8888a8;
+      --green: #34d399;
+      --red: #f87171;
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 18px 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header .logo {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+    header span { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+    /* ── Layout ── */
+    .layout {
+      display: grid;
+      grid-template-columns: 400px 1fr;
+      gap: 24px;
+      max-width: 1200px;
+      margin: 32px auto;
+      padding: 0 24px;
+    }
+
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-header .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .card-body { padding: 20px; }
+
+    /* ── Upload zone ── */
+    #drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: var(--surface2);
+    }
+    #drop-zone:hover, #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(108,99,255,0.06);
+    }
+    #drop-zone .icon { font-size: 36px; margin-bottom: 10px; }
+    #drop-zone p { color: var(--muted); font-size: 14px; }
+    #drop-zone strong { color: var(--text); }
+    #file-input { display: none; }
+
+    #file-info {
+      display: none;
+      margin-top: 14px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 13px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+    }
+    #file-info .file-icon { font-size: 22px; }
+    #file-info .file-name { font-weight: 500; }
+    #file-info .file-size { color: var(--muted); font-size: 12px; }
+
+    /* ── Form ── */
+    .section-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent2);
+      margin: 20px 0 12px;
+    }
+    .section-title:first-child { margin-top: 0; }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .form-group { margin-bottom: 12px; }
+    .form-group.full { grid-column: 1 / -1; }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 5px;
+      font-weight: 500;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px 12px;
+      color: var(--text);
+      font-size: 14px;
+      transition: border-color 0.15s;
+      outline: none;
+    }
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    select:focus {
+      border-color: var(--accent);
+    }
+    select option { background: var(--surface2); }
+
+    .color-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    input[type="color"] {
+      width: 40px; height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface2);
+      cursor: pointer;
+      padding: 2px;
+      flex-shrink: 0;
+    }
+    .color-row input[type="text"] { flex: 1; }
+
+    /* ── Transition pills ── */
+    .pill-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .pill {
+      padding: 7px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--muted);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.15s;
+      user-select: none;
+    }
+    .pill:hover { border-color: var(--accent); color: var(--text); }
+    .pill.selected {
+      border-color: var(--accent);
+      background: rgba(108,99,255,0.18);
+      color: var(--accent2);
+      font-weight: 600;
+    }
+
+    /* ── Run button ── */
+    #run-btn {
+      width: 100%;
+      margin-top: 20px;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--accent), #8b5cf6);
+      border: none;
+      border-radius: var(--radius);
+      color: white;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      letter-spacing: 0.2px;
+    }
+    #run-btn:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+    #run-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+    /* ── Right panel ── */
+    .right-panel { display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── Progress ── */
+    #progress-card { display: none; }
+
+    .progress-steps {
+      display: flex;
+      gap: 0;
+      margin-bottom: 20px;
+    }
+    .step {
+      flex: 1;
+      text-align: center;
+      font-size: 11px;
+      color: var(--muted);
+      position: relative;
+      padding-bottom: 8px;
+    }
+    .step::after {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--border);
+      border-radius: 2px;
+    }
+    .step.active { color: var(--accent2); }
+    .step.active::after { background: var(--accent); }
+    .step.done { color: var(--green); }
+    .step.done::after { background: var(--green); }
+    .step-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      font-size: 10px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .step.active .step-num { border-color: var(--accent); background: rgba(108,99,255,0.2); color: var(--accent2); }
+    .step.done .step-num { border-color: var(--green); background: rgba(52,211,153,0.15); color: var(--green); }
+
+    /* ── Log terminal ── */
+    #log {
+      background: #0a0a0e;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      height: 280px;
+      overflow-y: auto;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      color: #a0a0c0;
+    }
+    #log .log-line { white-space: pre-wrap; word-break: break-all; }
+    #log .log-step { color: var(--accent2); font-weight: 600; }
+    #log .log-ok   { color: var(--green); }
+    #log .log-warn { color: var(--gold); }
+    #log .log-err  { color: var(--red); }
+    #log .cursor {
+      display: inline-block;
+      width: 7px; height: 13px;
+      background: var(--accent2);
+      animation: blink 1s step-end infinite;
+      vertical-align: middle;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── Summary ── */
+    #summary-card { display: none; }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .stat {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      text-align: center;
+    }
+    .stat .val {
+      font-size: 28px;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--accent2), var(--gold));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .stat .lbl { font-size: 11px; color: var(--muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    .flagged-list {
+      background: rgba(251,191,36,0.06);
+      border: 1px solid rgba(251,191,36,0.25);
+      border-radius: 10px;
+      padding: 14px 16px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .flagged-list h4 { color: var(--gold); margin-bottom: 10px; font-size: 13px; }
+    .flagged-item { padding: 6px 0; border-bottom: 1px solid rgba(251,191,36,0.12); color: var(--muted); }
+    .flagged-item:last-child { border-bottom: none; }
+    .flagged-item .ts { color: var(--gold); font-family: monospace; font-size: 12px; }
+
+    #download-btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--green), #059669);
+      border: none;
+      border-radius: var(--radius);
+      color: white;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    #download-btn:hover { opacity: 0.9; }
+
+    /* ── Preview ── */
+    #preview-card { display: none; }
+    #preview-video {
+      width: 100%;
+      border-radius: 10px;
+      background: #000;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🎬</div>
+  <h1>Agent Spotlight Editor</h1>
+  <span>Powered by Whisper + MoviePy</span>
+</header>
+
+<div class="layout">
+
+  <!-- ── LEFT: Settings panel ── -->
+  <div>
+    <div class="card">
+      <div class="card-header"><div class="dot"></div>Video &amp; Settings</div>
+      <div class="card-body">
+
+        <!-- Upload -->
+        <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+          <div class="icon">📁</div>
+          <p><strong>Click to upload</strong> or drag &amp; drop</p>
+          <p style="margin-top:4px; font-size:12px;">MP4 or MOV · up to 2 GB</p>
+        </div>
+        <input type="file" id="file-input" accept=".mp4,.mov,.m4v" />
+        <div id="file-info">
+          <span class="file-icon">🎥</span>
+          <div>
+            <div class="file-name" id="file-name-label"></div>
+            <div class="file-size" id="file-size-label"></div>
+          </div>
+        </div>
+
+        <div class="section-title">Whisper Model</div>
+        <div class="form-group">
+          <label>Transcription accuracy</label>
+          <select id="model">
+            <option value="tiny">Tiny — fastest, lower accuracy</option>
+            <option value="base" selected>Base — fast, good accuracy (recommended)</option>
+            <option value="small">Small — slower, better accuracy</option>
+            <option value="medium">Medium — slow, great accuracy</option>
+            <option value="large">Large — slowest, best accuracy</option>
+          </select>
+        </div>
+
+        <div class="section-title">Transitions</div>
+        <div class="pill-group" id="transition-group">
+          <div class="pill selected" data-val="crossfade">Crossfade</div>
+          <div class="pill" data-val="fade_to_black">Fade to Black</div>
+          <div class="pill" data-val="none">Hard Cut</div>
+        </div>
+
+        <div class="section-title">Intro Card</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Title</label>
+            <input type="text" id="intro-title" placeholder="Meet Sarah Johnson" />
+          </div>
+          <div class="form-group">
+            <label>Subtitle</label>
+            <input type="text" id="intro-subtitle" placeholder="Top Agent · Miami, FL" />
+          </div>
+          <div class="form-group">
+            <label>Duration (seconds)</label>
+            <input type="number" id="intro-duration" value="3" min="1" max="10" step="0.5" />
+          </div>
+          <div class="form-group">
+            <label>Background color</label>
+            <div class="color-row">
+              <input type="color" id="intro-color-picker" value="#1a1a2e" oninput="syncColor('intro')" />
+              <input type="text" id="intro-color" value="#1a1a2e" oninput="syncColorPicker('intro')" maxlength="7" />
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">Outro Card</div>
+        <div class="form-row">
+          <div class="form-group full">
+            <label>Call-to-action text</label>
+            <input type="text" id="outro-text" placeholder="Follow @BrowardRealty for more agent spotlights" />
+          </div>
+          <div class="form-group">
+            <label>Duration (seconds)</label>
+            <input type="number" id="outro-duration" value="4" min="1" max="10" step="0.5" />
+          </div>
+          <div class="form-group">
+            <label>Background color</label>
+            <div class="color-row">
+              <input type="color" id="outro-color-picker" value="#1a1a2e" oninput="syncColor('outro')" />
+              <input type="text" id="outro-color" value="#1a1a2e" oninput="syncColorPicker('outro')" maxlength="7" />
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">Lower Third Overlay</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" id="lt-name" placeholder="Sarah Johnson" />
+          </div>
+          <div class="form-group">
+            <label>Job title</label>
+            <input type="text" id="lt-title" placeholder="Senior Real Estate Agent" />
+          </div>
+          <div class="form-group">
+            <label>Appears at (seconds in)</label>
+            <input type="number" id="lt-at" value="1.5" min="0" step="0.5" />
+          </div>
+          <div class="form-group">
+            <label>Duration on screen (seconds)</label>
+            <input type="number" id="lt-duration" value="4" min="1" max="15" step="0.5" />
+          </div>
+        </div>
+
+        <button id="run-btn" disabled onclick="startJob()">⚡ Clean &amp; Export Video</button>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RIGHT: Progress + output ── -->
+  <div class="right-panel">
+
+    <div class="card" id="progress-card">
+      <div class="card-header"><div class="dot"></div>Processing</div>
+      <div class="card-body">
+        <div class="progress-steps">
+          <div class="step" id="step-1"><div class="step-num">1</div><br/>Transcribe</div>
+          <div class="step" id="step-2"><div class="step-num">2</div><br/>Detect Fillers</div>
+          <div class="step" id="step-3"><div class="step-num">3</div><br/>Build Cuts</div>
+          <div class="step" id="step-4"><div class="step-num">4</div><br/>Overlays</div>
+          <div class="step" id="step-5"><div class="step-num">5</div><br/>Export</div>
+        </div>
+        <div id="log"><span class="cursor"></span></div>
+      </div>
+    </div>
+
+    <div class="card" id="summary-card">
+      <div class="card-header"><div class="dot" style="background:var(--green)"></div>Complete</div>
+      <div class="card-body">
+        <div class="stat-grid">
+          <div class="stat">
+            <div class="val" id="stat-cuts">—</div>
+            <div class="lbl">Filler cuts</div>
+          </div>
+          <div class="stat">
+            <div class="val" id="stat-time">—</div>
+            <div class="lbl">Seconds saved</div>
+          </div>
+        </div>
+        <div id="flagged-section" style="display:none">
+          <div class="flagged-list">
+            <h4>⚠️ Manual review needed</h4>
+            <div id="flagged-items"></div>
+          </div>
+        </div>
+        <button id="download-btn" onclick="downloadResult()">
+          ⬇️ Download Cleaned Video
+        </button>
+      </div>
+    </div>
+
+    <div class="card" id="preview-card">
+      <div class="card-header"><div class="dot"></div>Preview</div>
+      <div class="card-body">
+        <video id="preview-video" controls></video>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  let currentJobId = null;
+  let uploadedInputPath = null;
+  let selectedTransition = "crossfade";
+
+  // ── File upload ──
+  const dropZone = document.getElementById("drop-zone");
+  const fileInput = document.getElementById("file-input");
+
+  dropZone.addEventListener("dragover", e => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+  dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+  dropZone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropZone.classList.remove("drag-over");
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files[0]) handleFile(fileInput.files[0]);
+  });
+
+  async function handleFile(file) {
+    const info = document.getElementById("file-info");
+    document.getElementById("file-name-label").textContent = file.name;
+    document.getElementById("file-size-label").textContent = formatBytes(file.size);
+    info.style.display = "flex";
+
+    const fd = new FormData();
+    fd.append("video", file);
+    const res = await fetch("/upload", { method: "POST", body: fd });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    currentJobId = data.job_id;
+    uploadedInputPath = data.input_path;
+    document.getElementById("run-btn").disabled = false;
+  }
+
+  // ── Transition pills ──
+  document.querySelectorAll(".pill").forEach(p => {
+    p.addEventListener("click", () => {
+      document.querySelectorAll(".pill").forEach(x => x.classList.remove("selected"));
+      p.classList.add("selected");
+      selectedTransition = p.dataset.val;
+    });
+  });
+
+  // ── Color sync ──
+  function syncColor(prefix) {
+    const picker = document.getElementById(`${prefix}-color-picker`);
+    document.getElementById(`${prefix}-color`).value = picker.value;
+  }
+  function syncColorPicker(prefix) {
+    const hex = document.getElementById(`${prefix}-color`).value;
+    if (/^#[0-9a-fA-F]{6}$/.test(hex))
+      document.getElementById(`${prefix}-color-picker`).value = hex;
+  }
+
+  // ── Start job ──
+  async function startJob() {
+    if (!currentJobId || !uploadedInputPath) return;
+
+    document.getElementById("run-btn").disabled = true;
+    document.getElementById("progress-card").style.display = "block";
+    document.getElementById("summary-card").style.display = "none";
+    document.getElementById("preview-card").style.display = "none";
+    clearLog();
+    resetSteps();
+
+    const payload = {
+      job_id: currentJobId,
+      input_path: uploadedInputPath,
+      model: document.getElementById("model").value,
+      transition: selectedTransition,
+      intro_title: document.getElementById("intro-title").value,
+      intro_subtitle: document.getElementById("intro-subtitle").value,
+      intro_color: document.getElementById("intro-color").value,
+      intro_duration: parseFloat(document.getElementById("intro-duration").value),
+      outro_text: document.getElementById("outro-text").value,
+      outro_color: document.getElementById("outro-color").value,
+      outro_duration: parseFloat(document.getElementById("outro-duration").value),
+      lower_third_name: document.getElementById("lt-name").value,
+      lower_third_title: document.getElementById("lt-title").value,
+      lower_third_at: parseFloat(document.getElementById("lt-at").value),
+      lower_third_duration: parseFloat(document.getElementById("lt-duration").value),
+    };
+
+    await fetch("/process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    listenToStream();
+  }
+
+  // ── SSE log stream ──
+  function listenToStream() {
+    const es = new EventSource(`/stream/${currentJobId}`);
+    es.onmessage = e => {
+      const line = e.data;
+      if (line === "__DONE__") {
+        es.close();
+        onDone();
+      } else if (line === "__ERROR__") {
+        es.close();
+        onError();
+      } else if (line.trim()) {
+        appendLog(line);
+        updateSteps(line);
+      }
+    };
+  }
+
+  // ── Log helpers ──
+  function clearLog() {
+    document.getElementById("log").innerHTML = '<span class="cursor"></span>';
+  }
+  function appendLog(line) {
+    const log = document.getElementById("log");
+    const cursor = log.querySelector(".cursor");
+    const div = document.createElement("div");
+    div.className = "log-line";
+
+    if (line.startsWith("[")) div.classList.add("log-step");
+    else if (line.includes("WARNING") || line.includes("flagged")) div.classList.add("log-warn");
+    else if (line.includes("ERROR")) div.classList.add("log-err");
+    else if (line.includes("Writing") || line.includes("done") || line.includes("Complete")) div.classList.add("log-ok");
+
+    div.textContent = line;
+    log.insertBefore(div, cursor);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  // ── Step indicators ──
+  function resetSteps() {
+    for (let i = 1; i <= 5; i++)
+      document.getElementById(`step-${i}`).className = "step";
+  }
+  function updateSteps(line) {
+    const match = line.match(/\[(\d)\/5\]/);
+    if (!match) return;
+    const n = parseInt(match[1]);
+    for (let i = 1; i < n; i++)
+      document.getElementById(`step-${i}`).className = "step done";
+    document.getElementById(`step-${n}`).className = "step active";
+  }
+
+  // ── Done ──
+  async function onDone() {
+    for (let i = 1; i <= 5; i++)
+      document.getElementById(`step-${i}`).className = "step done";
+    appendLog("✓ Export complete!");
+
+    const res = await fetch(`/status/${currentJobId}`);
+    const data = await res.json();
+    const log = data.log.join("\n");
+
+    // Parse summary from log
+    const cutsMatch = log.match(/Filler cuts made\s*:\s*(\d+)/);
+    const timeMatch = log.match(/Total time saved\s*:\s*([\d.]+)/);
+    document.getElementById("stat-cuts").textContent = cutsMatch ? cutsMatch[1] : "—";
+    document.getElementById("stat-time").textContent = timeMatch ? timeMatch[1] + "s" : "—";
+
+    // Parse flagged items
+    const flaggedSection = document.getElementById("flagged-section");
+    const flaggedItems = document.getElementById("flagged-items");
+    const flagLines = data.log.filter(l => l.match(/^\s*\[\d+\]/));
+    if (flagLines.length) {
+      flaggedItems.innerHTML = flagLines.map(l => {
+        const ts = l.match(/([\d.]+s\s*–\s*[\d.]+s)/);
+        const reason = l.replace(/^\s*\[\d+\]\s*/, "").trim();
+        return `<div class="flagged-item"><span class="ts">${ts ? ts[1] : ""}</span> ${reason}</div>`;
+      }).join("");
+      flaggedSection.style.display = "block";
+    } else {
+      flaggedSection.style.display = "none";
+    }
+
+    document.getElementById("summary-card").style.display = "block";
+    document.getElementById("run-btn").disabled = false;
+  }
+
+  function onError() {
+    appendLog("✗ An error occurred. Check the log above.");
+    document.getElementById("run-btn").disabled = false;
+  }
+
+  // ── Download ──
+  function downloadResult() {
+    if (!currentJobId) return;
+    window.location.href = `/download/${currentJobId}`;
+  }
+
+  // ── Utilities ──
+  function formatBytes(b) {
+    if (b < 1024) return b + " B";
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+    return (b / (1024 * 1024)).toFixed(1) + " MB";
+  }
+</script>
+</body>
+</html>
